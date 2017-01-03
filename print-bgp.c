@@ -259,9 +259,12 @@ static const struct tok bgp_notify_major_values[] = {
 
 /* draft-ietf-idr-cease-subcode-02 */
 #define BGP_NOTIFY_MINOR_CEASE_MAXPRFX  1
+/* draft-ietf-idr-shutdown-02 */
+#define BGP_NOTIFY_MINOR_CEASE_ADMIN    2
+#define BGP_NOTIFY_MINOR_CEASE_ADMIN_SHUTDOWN_LEN   128
 static const struct tok bgp_notify_minor_cease_values[] = {
     { BGP_NOTIFY_MINOR_CEASE_MAXPRFX, "Maximum Number of Prefixes Reached"},
-    { 2,                        "Administratively Shutdown"},
+    { BGP_NOTIFY_MINOR_CEASE_ADMIN,   "Administratively Shutdown"},
     { 3,                        "Peer Unconfigured"},
     { 4,                        "Administratively Reset"},
     { 5,                        "Connection Rejected"},
@@ -2604,6 +2607,8 @@ bgp_notification_print(netdissect_options *ndo,
 {
 	struct bgp_notification bgpn;
 	const u_char *tptr;
+    uint8_t shutdown_comm_length;
+    uint8_t remainder_offset;
 
 	ND_TCHECK2(dat[0], BGP_NOTIFICATION_SIZE);
 	memcpy(&bgpn, dat, BGP_NOTIFICATION_SIZE);
@@ -2669,7 +2674,38 @@ bgp_notification_print(netdissect_options *ndo,
 		       *(tptr+2),
 		       EXTRACT_32BITS(tptr+3)));
 	    }
-            break;
+            /*
+             * draft-ietf-idr-shutdown describes a method to send a communication
+             * intended for human consumption regarding the Administrative Shutdown
+             */
+			if(bgpn.bgpn_minor == BGP_NOTIFY_MINOR_CEASE_ADMIN && length >= 1) {
+				tptr = dat + BGP_NOTIFICATION_SIZE;
+				ND_TCHECK2(*tptr, 1);
+				shutdown_comm_length = *(tptr);
+				remainder_offset = 0;
+				/* garbage, hexdump it all */
+				if (shutdown_comm_length > BGP_NOTIFY_MINOR_CEASE_ADMIN_SHUTDOWN_LEN) {
+					ND_PRINT((ndo, ", invalid Shutdown Communication length"));
+				}
+				else if (shutdown_comm_length == 0) {
+					ND_PRINT((ndo, ", empty Shutdown Communication"));
+					remainder_offset += 1;
+				}
+				/* a proper shutdown communication */
+				else if (shutdown_comm_length <= BGP_NOTIFY_MINOR_CEASE_ADMIN_SHUTDOWN_LEN) {
+					ND_TCHECK2(*tptr, shutdown_comm_length);
+					ND_PRINT((ndo, ", Shutdown Communication (length: %u): \"", shutdown_comm_length));
+					safeputs(ndo, tptr+1, shutdown_comm_length);
+					ND_PRINT((ndo, "\""));
+					remainder_offset += shutdown_comm_length + 1;
+				}
+				/* if there is trailing data, hexdump it */
+				if(length - (remainder_offset + BGP_NOTIFICATION_SIZE) > 0) {
+					ND_PRINT((ndo, ", Data: (length: %u)", length - (remainder_offset + BGP_NOTIFICATION_SIZE)));
+					hex_print(ndo, "\n\t\t", tptr + remainder_offset, length);
+				}
+			}
+			break;
         default:
             break;
         }
